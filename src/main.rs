@@ -323,6 +323,28 @@ enum Commands {
 
     /// Show issues ready to work on (open, not blocked)
     Ready,
+
+    /// Claim an issue for a session
+    Claim {
+        /// Issue ID
+        id: String,
+        /// Session ID (caller provides their own)
+        #[arg(long)]
+        session: String,
+    },
+
+    /// Release a claimed issue
+    Release {
+        /// Issue ID
+        id: String,
+    },
+
+    /// Show issues claimed by a session
+    Mine {
+        /// Session ID
+        #[arg(long)]
+        session: String,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -493,6 +515,9 @@ fn cmd_show(store: &Store, id: &str, json_output: bool) -> Result<(), String> {
     println!("{}", "-".repeat(60));
     println!("Status:   {:<16} Priority: P{}", issue.status, issue.priority);
     println!("Type:     {:<16} Assignee: {}", issue.issue_type, issue.assignee.as_deref().unwrap_or("-"));
+    if let Some(ref session) = issue.session_id {
+        println!("Session:  {}", session);
+    }
     println!("Created:  {}", issue.created_at.format("%Y-%m-%d %H:%M"));
     println!("Updated:  {}", issue.updated_at.format("%Y-%m-%d %H:%M"));
     if let Some(closed_at) = issue.closed_at {
@@ -843,6 +868,102 @@ fn normalize_cycle(cycle: &[String]) -> Vec<String> {
     normalized
 }
 
+fn cmd_claim(store: &mut Store, id: &str, session: &str, json_output: bool) -> Result<(), String> {
+    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+
+    if let Some(ref existing) = issue.session_id {
+        if existing == session {
+            return Err(format!("{} already claimed by this session", id));
+        } else {
+            return Err(format!("{} already claimed by session {}", id, existing));
+        }
+    }
+
+    issue.session_id = Some(session.to_string());
+    issue.status = Status::InProgress;
+    issue.updated_at = Utc::now();
+
+    let issue_clone = issue.clone();
+    store.save()?;
+
+    if json_output {
+        println!("{}", serde_json::to_string(&issue_clone).unwrap());
+    } else {
+        println!("Claimed {} for session {}", id, session);
+    }
+
+    Ok(())
+}
+
+fn cmd_release(store: &mut Store, id: &str, json_output: bool) -> Result<(), String> {
+    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+
+    if issue.session_id.is_none() {
+        return Err(format!("{} is not claimed", id));
+    }
+
+    let old_session = issue.session_id.take();
+    issue.status = Status::Open;
+    issue.updated_at = Utc::now();
+
+    let issue_clone = issue.clone();
+    store.save()?;
+
+    if json_output {
+        println!("{}", serde_json::to_string(&issue_clone).unwrap());
+    } else {
+        println!("Released {} (was claimed by {})", id, old_session.unwrap());
+    }
+
+    Ok(())
+}
+
+fn cmd_mine(store: &Store, session: &str, json_output: bool) -> Result<(), String> {
+    let mut mine: Vec<_> = store
+        .issues
+        .values()
+        .filter(|i| i.session_id.as_deref() == Some(session))
+        .collect();
+
+    mine.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+
+    if json_output {
+        println!("{}", serde_json::to_string(&mine).unwrap());
+        return Ok(());
+    }
+
+    if mine.is_empty() {
+        println!("No issues claimed by session {}", session);
+        return Ok(());
+    }
+
+    println!();
+    println!(
+        "  {:<8} {:>2}  {:<8} {}",
+        "ID", "P", "TYPE", "TITLE"
+    );
+    println!("  {}", "-".repeat(60));
+
+    for issue in &mine {
+        println!(
+            "  {:<8} {:>2}  {:<8} {}",
+            issue.id,
+            issue.priority,
+            issue.issue_type,
+            truncate(&issue.title, 40)
+        );
+    }
+
+    println!();
+    println!("{} issue(s) claimed by session {}", mine.len(), session);
+
+    Ok(())
+}
+
 fn cmd_ready(store: &Store, json_output: bool) -> Result<(), String> {
     // Ready = open issues where all blockers are closed (or no blockers)
     let mut ready: Vec<_> = store
@@ -946,6 +1067,9 @@ fn main() {
                     Commands::Tree { id } => cmd_tree(&store, &id, cli.json),
                     Commands::Cycles => cmd_cycles(&store, cli.json),
                     Commands::Ready => cmd_ready(&store, cli.json),
+                    Commands::Claim { id, session } => cmd_claim(&mut store, &id, &session, cli.json),
+                    Commands::Release { id } => cmd_release(&mut store, &id, cli.json),
+                    Commands::Mine { session } => cmd_mine(&store, &session, cli.json),
                 },
                 Err(e) => Err(e),
             }
