@@ -79,6 +79,24 @@ impl std::str::FromStr for IssueType {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// State Machine
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Transitions that can be applied to an issue.
+/// Status is a side-effect of ownership transitions, not set directly.
+#[derive(Debug, Clone)]
+enum Transition {
+    /// Take ownership: (Open|Closed) → InProgress
+    Claim { session: String },
+    /// Abandon work: InProgress → Open
+    Release,
+    /// Complete work: InProgress → Closed
+    Finish,
+    /// Close unclaimed issue: Open → Closed (escape hatch)
+    Close,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Comment {
     author: String,
@@ -97,8 +115,6 @@ struct Issue {
     priority: u8,
     issue_type: IssueType,
     #[serde(skip_serializing_if = "Option::is_none")]
-    assignee: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<String>,
     #[serde(default)]
     labels: Vec<String>,
@@ -112,6 +128,131 @@ struct Issue {
     blocks: Vec<String>,
     #[serde(default)]
     blocked_by: Vec<String>,
+}
+
+impl Issue {
+    /// Apply a state transition to this issue.
+    /// Returns the previous session_id if relevant (for release/finish messages).
+    fn apply(&mut self, transition: Transition) -> Result<Option<String>, String> {
+        let now = Utc::now();
+
+        match (&self.status, &self.session_id, transition) {
+            // Claim: Open + unclaimed → InProgress
+            (Status::Open, None, Transition::Claim { session }) => {
+                self.session_id = Some(session);
+                self.status = Status::InProgress;
+                self.updated_at = now;
+                Ok(None)
+            }
+
+            // Claim: Open + already claimed by same session
+            (Status::Open, Some(existing), Transition::Claim { session }) if existing == &session => {
+                Err(format!("{} already claimed by this session", self.id))
+            }
+
+            // Claim: Open + already claimed by different session
+            (Status::Open, Some(existing), Transition::Claim { .. }) => {
+                Err(format!("{} already claimed by session {}", self.id, existing))
+            }
+
+            // Claim: Closed → InProgress (reopen)
+            (Status::Closed, _, Transition::Claim { session }) => {
+                self.session_id = Some(session);
+                self.status = Status::InProgress;
+                self.closed_at = None;
+                self.updated_at = now;
+                Ok(None)
+            }
+
+            // Claim: InProgress + already claimed
+            (Status::InProgress, Some(existing), Transition::Claim { session }) if existing == &session => {
+                Err(format!("{} already claimed by this session", self.id))
+            }
+
+            (Status::InProgress, Some(existing), Transition::Claim { .. }) => {
+                Err(format!("{} already claimed by session {}", self.id, existing))
+            }
+
+            // Release: InProgress + claimed → Open
+            (Status::InProgress, Some(_), Transition::Release) => {
+                let old_session = self.session_id.take();
+                self.status = Status::Open;
+                self.updated_at = now;
+                Ok(old_session)
+            }
+
+            // Release: not claimed
+            (_, None, Transition::Release) => {
+                Err(format!("{} is not claimed", self.id))
+            }
+
+            // Release: not in progress (but claimed somehow - shouldn't happen)
+            (_, Some(_), Transition::Release) => {
+                Err(format!("{} is not in progress", self.id))
+            }
+
+            // Finish: InProgress + claimed → Closed
+            (Status::InProgress, Some(_), Transition::Finish) => {
+                let old_session = self.session_id.take();
+                self.status = Status::Closed;
+                self.closed_at = Some(now);
+                self.updated_at = now;
+                Ok(old_session)
+            }
+
+            // Finish: not claimed
+            (_, None, Transition::Finish) => {
+                Err(format!("{} is not claimed. Use 'close' for unclaimed issues.", self.id))
+            }
+
+            // Finish: already closed
+            (Status::Closed, _, Transition::Finish) => {
+                Err(format!("{} is already closed", self.id))
+            }
+
+            // Finish: open but not claimed (shouldn't have session)
+            (Status::Open, Some(_), Transition::Finish) => {
+                Err(format!("{} is open, not in progress", self.id))
+            }
+
+            // Close: Open + unclaimed → Closed (escape hatch)
+            (Status::Open, None, Transition::Close) => {
+                self.status = Status::Closed;
+                self.closed_at = Some(now);
+                self.updated_at = now;
+                Ok(None)
+            }
+
+            // Close: already closed
+            (Status::Closed, _, Transition::Close) => {
+                Err(format!("{} is already closed", self.id))
+            }
+
+            // Close: claimed - must release first or use finish
+            (_, Some(session), Transition::Close) => {
+                Err(format!(
+                    "{} is claimed by session {}. Use 'release' first, or 'finish' to complete.",
+                    self.id, session
+                ))
+            }
+
+            // Invalid states (InProgress without session shouldn't exist)
+            (Status::InProgress, None, Transition::Claim { session }) => {
+                // Treat as claimable - fix the inconsistent state
+                self.session_id = Some(session);
+                self.updated_at = now;
+                Ok(None)
+            }
+
+            (Status::InProgress, None, Transition::Close) => {
+                // InProgress but no owner - treat as closeable
+                self.status = Status::Closed;
+                self.closed_at = Some(now);
+                self.updated_at = now;
+                Ok(None)
+            }
+        }
+    }
 }
 
 fn default_priority() -> u8 {
@@ -350,24 +491,6 @@ enum Commands {
         reason: Option<String>,
     },
 
-    /// Update an issue
-    Update {
-        /// Issue ID
-        id: String,
-
-        /// New status (open, in_progress, closed)
-        #[arg(long)]
-        status: Option<String>,
-
-        /// New priority (0-4)
-        #[arg(long)]
-        priority: Option<u8>,
-
-        /// New assignee
-        #[arg(long)]
-        assignee: Option<String>,
-    },
-
     /// Add a blocking dependency (blocker blocks id)
     Block {
         /// Issue that is blocked
@@ -405,8 +528,14 @@ enum Commands {
         session: String,
     },
 
-    /// Release a claimed issue
+    /// Release a claimed issue (back to open)
     Release {
+        /// Issue ID
+        id: String,
+    },
+
+    /// Finish a claimed issue (release + close)
+    Finish {
         /// Issue ID
         id: String,
     },
@@ -426,6 +555,14 @@ enum Commands {
         action: String,
         /// Label name
         label: String,
+    },
+
+    /// Set priority of an issue
+    Priority {
+        /// Issue ID
+        id: String,
+        /// New priority (0-4, 0 = highest)
+        value: u8,
     },
 
     /// Add a comment to an issue
@@ -525,7 +662,6 @@ fn cmd_create(
         status: Status::Open,
         priority,
         issue_type,
-        assignee: None,
         session_id: None,
         labels: vec![],
         comments: vec![],
@@ -620,7 +756,7 @@ fn cmd_show(store: &Store, id: &str, json_output: bool) -> Result<(), String> {
     println!("{}: {}", issue.id, issue.title);
     println!("{}", "-".repeat(60));
     println!("Status:   {:<16} Priority: P{}", issue.status, issue.priority);
-    println!("Type:     {:<16} Assignee: {}", issue.issue_type, issue.assignee.as_deref().unwrap_or("-"));
+    println!("Type:     {}", issue.issue_type);
     if let Some(ref session) = issue.session_id {
         println!("Session:  {}", session);
     }
@@ -663,13 +799,7 @@ fn cmd_show(store: &Store, id: &str, json_output: bool) -> Result<(), String> {
 fn cmd_close(store: &mut Store, id: &str, _reason: Option<String>, json_output: bool) -> Result<(), String> {
     let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
 
-    if issue.status == Status::Closed {
-        return Err(format!("Issue {} is already closed", id));
-    }
-
-    issue.status = Status::Closed;
-    issue.closed_at = Some(Utc::now());
-    issue.updated_at = Utc::now();
+    issue.apply(Transition::Close)?;
 
     let issue_clone = issue.clone();
     store.save()?;
@@ -678,53 +808,6 @@ fn cmd_close(store: &mut Store, id: &str, _reason: Option<String>, json_output: 
         println!("{}", serde_json::to_string(&issue_clone).unwrap());
     } else {
         println!("Closed {}", id);
-    }
-
-    Ok(())
-}
-
-fn cmd_update(
-    store: &mut Store,
-    id: &str,
-    status: Option<String>,
-    priority: Option<u8>,
-    assignee: Option<String>,
-    json_output: bool,
-) -> Result<(), String> {
-    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
-
-    if let Some(s) = status {
-        issue.status = match s.as_str() {
-            "open" => Status::Open,
-            "in_progress" => Status::InProgress,
-            "closed" => {
-                issue.closed_at = Some(Utc::now());
-                Status::Closed
-            }
-            _ => return Err(format!("Unknown status: {}", s)),
-        };
-    }
-
-    if let Some(p) = priority {
-        if p > 4 {
-            return Err("Priority must be 0-4".to_string());
-        }
-        issue.priority = p;
-    }
-
-    if let Some(a) = assignee {
-        issue.assignee = if a.is_empty() { None } else { Some(a) };
-    }
-
-    issue.updated_at = Utc::now();
-
-    let issue_clone = issue.clone();
-    store.save()?;
-
-    if json_output {
-        println!("{}", serde_json::to_string(&issue_clone).unwrap());
-    } else {
-        println!("Updated {}", id);
     }
 
     Ok(())
@@ -992,17 +1075,7 @@ fn normalize_cycle(cycle: &[String]) -> Vec<String> {
 fn cmd_claim(store: &mut Store, id: &str, session: &str, json_output: bool) -> Result<(), String> {
     let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
 
-    if let Some(ref existing) = issue.session_id {
-        if existing == session {
-            return Err(format!("{} already claimed by this session", id));
-        } else {
-            return Err(format!("{} already claimed by session {}", id, existing));
-        }
-    }
-
-    issue.session_id = Some(session.to_string());
-    issue.status = Status::InProgress;
-    issue.updated_at = Utc::now();
+    issue.apply(Transition::Claim { session: session.to_string() })?;
 
     let issue_clone = issue.clone();
     store.save()?;
@@ -1019,13 +1092,7 @@ fn cmd_claim(store: &mut Store, id: &str, session: &str, json_output: bool) -> R
 fn cmd_release(store: &mut Store, id: &str, json_output: bool) -> Result<(), String> {
     let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
 
-    if issue.session_id.is_none() {
-        return Err(format!("{} is not claimed", id));
-    }
-
-    let old_session = issue.session_id.take();
-    issue.status = Status::Open;
-    issue.updated_at = Utc::now();
+    let old_session = issue.apply(Transition::Release)?;
 
     let issue_clone = issue.clone();
     store.save()?;
@@ -1034,6 +1101,23 @@ fn cmd_release(store: &mut Store, id: &str, json_output: bool) -> Result<(), Str
         println!("{}", serde_json::to_string(&issue_clone).unwrap());
     } else {
         println!("Released {} (was claimed by {})", id, old_session.unwrap());
+    }
+
+    Ok(())
+}
+
+fn cmd_finish(store: &mut Store, id: &str, json_output: bool) -> Result<(), String> {
+    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+
+    let old_session = issue.apply(Transition::Finish)?;
+
+    let issue_clone = issue.clone();
+    store.save()?;
+
+    if json_output {
+        println!("{}", serde_json::to_string(&issue_clone).unwrap());
+    } else {
+        println!("Finished {} (was claimed by {})", id, old_session.unwrap());
     }
 
     Ok(())
@@ -1118,6 +1202,29 @@ fn cmd_label(store: &mut Store, id: &str, action: &str, label: &str, json_output
             if action == "add" { "to" } else { "from" },
             id
         );
+    }
+
+    Ok(())
+}
+
+fn cmd_priority(store: &mut Store, id: &str, value: u8, json_output: bool) -> Result<(), String> {
+    if value > 4 {
+        return Err("Priority must be 0-4".to_string());
+    }
+
+    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+
+    let old_priority = issue.priority;
+    issue.priority = value;
+    issue.updated_at = Utc::now();
+
+    let issue_clone = issue.clone();
+    store.save()?;
+
+    if json_output {
+        println!("{}", serde_json::to_string(&issue_clone).unwrap());
+    } else {
+        println!("Priority {} -> {} for {}", old_priority, value, id);
     }
 
     Ok(())
@@ -1343,7 +1450,6 @@ fn cmd_import(store: &mut Store, file: &Path, keep_ids: bool, json_output: bool)
             status,
             priority: beads.priority.min(4),
             issue_type,
-            assignee: None,
             session_id: None,
             labels: vec![],
             comments: vec![],
@@ -1413,10 +1519,19 @@ VIEWING ISSUES
   ba show <id>      Show full details
   ba ready          Show issues ready to work on (open + not blocked)
 
-WORKING ON ISSUES
-  ba update <id> --status in_progress   Start work
-  ba update <id> --priority 0           Escalate priority
-  ba close <id> --reason "Fixed"        Complete work
+OWNERSHIP-BASED WORKFLOW
+  ba claim <id> --session $SESSION    Take ownership (open → in_progress)
+  ba release <id>                     Abandon work (in_progress → open)
+  ba finish <id>                      Complete work (in_progress → closed)
+  ba close <id>                       Close unclaimed issue (escape hatch)
+
+  Status is a side-effect of ownership transitions, not set directly.
+
+MODIFYING ISSUES
+  ba priority <id> <0-4>              Set priority (0 = critical)
+  ba label <id> add urgent            Add a label
+  ba label <id> remove urgent         Remove a label
+  ba comment <id> "text" --author X   Add a comment
 
 DEPENDENCIES
   ba block <id> <blocker>    Mark <id> blocked by <blocker>
@@ -1427,14 +1542,9 @@ DEPENDENCIES
 MULTI-AGENT COORDINATION
   ba claim <id> --session <session_id>  Claim issue for your session
   ba mine --session <session_id>        Show your claimed issues
-  ba release <id>                       Release claim
+  ba release <id>                       Release claim (back to pool)
 
   Tip: Use your Claude session ID as --session value
-
-LABELS AND COMMENTS
-  ba label <id> add urgent
-  ba label <id> remove urgent
-  ba comment <id> "Found root cause" --author claude
 
 IMPORTING FROM BEADS (bd)
   ba import .beads/issues.jsonl --keep-ids
@@ -1446,10 +1556,9 @@ JSON OUTPUT (for programmatic use)
 
 TYPICAL WORKFLOW
   1. ba ready                          # Find unblocked work
-  2. ba claim <id> --session $SESSION  # Claim it
-  3. ba update <id> --status in_progress
-  4. ... do the work ...
-  5. ba close <id> --reason "Done"
+  2. ba claim <id> --session $SESSION  # Claim it (sets in_progress)
+  3. ... do the work ...
+  4. ba finish <id>                    # Complete (clears claim, closes)
 
 DISCOVERING NEW WORK
   1. ba create "Found bug in X" -t bug -p 1
@@ -1554,12 +1663,6 @@ fn main() {
                     Commands::List { status, all } => cmd_list(&store, status, all, cli.json),
                     Commands::Show { id } => cmd_show(&store, &id, cli.json),
                     Commands::Close { id, reason } => cmd_close(&mut store, &id, reason, cli.json),
-                    Commands::Update {
-                        id,
-                        status,
-                        priority,
-                        assignee,
-                    } => cmd_update(&mut store, &id, status, priority, assignee, cli.json),
                     Commands::Block { id, blocker } => cmd_block(&mut store, &id, &blocker, cli.json),
                     Commands::Unblock { id, blocker } => cmd_unblock(&mut store, &id, &blocker, cli.json),
                     Commands::Tree { id } => cmd_tree(&store, &id, cli.json),
@@ -1567,8 +1670,10 @@ fn main() {
                     Commands::Ready => cmd_ready(&store, cli.json),
                     Commands::Claim { id, session } => cmd_claim(&mut store, &id, &session, cli.json),
                     Commands::Release { id } => cmd_release(&mut store, &id, cli.json),
+                    Commands::Finish { id } => cmd_finish(&mut store, &id, cli.json),
                     Commands::Mine { session } => cmd_mine(&store, &session, cli.json),
                     Commands::Label { id, action, label } => cmd_label(&mut store, &id, &action, &label, cli.json),
+                    Commands::Priority { id, value } => cmd_priority(&mut store, &id, value, cli.json),
                     Commands::Comment { id, text, author } => cmd_comment(&mut store, &id, &text, &author, cli.json),
                     Commands::Import { file, keep_ids } => cmd_import(&mut store, &file, keep_ids, cli.json),
                 },
