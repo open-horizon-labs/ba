@@ -37,26 +37,29 @@ impl std::fmt::Display for Status {
     }
 }
 
+// AIDEV-NOTE: Issue types are minimal by design. Only types that signal
+// different work patterns exist - priority handles urgency, title describes
+// the work. Types:
+// - task: default, general work
+// - epic: container for grouping related issues
+// - refactor: improving existing code (no new behavior)
+// - spike: research/investigation (may not produce code)
+// Legacy types (bug, feature, chore) deserialize to Task for backwards compat.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum IssueType {
-    Bug,
-    Feature,
-    Task,
     Epic,
-    Chore,
     Refactor,
     Spike,
+    #[serde(other)]
+    Task,
 }
 
 impl std::fmt::Display for IssueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IssueType::Bug => write!(f, "bug"),
-            IssueType::Feature => write!(f, "feature"),
             IssueType::Task => write!(f, "task"),
             IssueType::Epic => write!(f, "epic"),
-            IssueType::Chore => write!(f, "chore"),
             IssueType::Refactor => write!(f, "refactor"),
             IssueType::Spike => write!(f, "spike"),
         }
@@ -67,14 +70,11 @@ impl std::str::FromStr for IssueType {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "bug" => Ok(IssueType::Bug),
-            "feature" => Ok(IssueType::Feature),
             "task" => Ok(IssueType::Task),
             "epic" => Ok(IssueType::Epic),
-            "chore" => Ok(IssueType::Chore),
             "refactor" => Ok(IssueType::Refactor),
             "spike" => Ok(IssueType::Spike),
-            _ => Err(format!("Unknown issue type: {}", s)),
+            _ => Err(format!("Unknown issue type: {} (valid: task, epic, refactor, spike)", s)),
         }
     }
 }
@@ -1505,11 +1505,11 @@ GETTING STARTED
   ba quickstart     Show this guide
 
 CREATING ISSUES
-  ba create "Fix login bug" -t bug -p 1
-  ba create "Add feature" -t feature -d "Description here"
-  ba create "Research caching" -t spike -p 2
+  ba create "Fix login bug" -p 1
+  ba create "Add caching layer" -t refactor -d "Description here"
+  ba create "Research auth options" -t spike -p 2
 
-ISSUE TYPES: bug, feature, task, epic, chore, refactor, spike
+ISSUE TYPES: task (default), epic, refactor, spike
 PRIORITIES: 0 (critical) → 4 (backlog), default is 2
 
 VIEWING ISSUES

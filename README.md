@@ -165,13 +165,10 @@ Only `blocks` dependencies are imported (other types like `related`, `parent-chi
 
 ## Issue Types
 
-- `bug` - Something broken
-- `feature` - New functionality
-- `task` - Work item
-- `epic` - Large feature composed of subtasks
-- `chore` - Maintenance work
-- `refactor` - Code restructuring
-- `spike` - Research/investigation
+- `task` - Default, general work item
+- `epic` - Container for grouping related issues
+- `refactor` - Improving existing code (no new behavior)
+- `spike` - Research/investigation (may not produce code)
 
 ## Priorities
 
