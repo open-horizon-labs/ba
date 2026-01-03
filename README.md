@@ -91,6 +91,25 @@ An issue is "ready" when:
 - Status is `open` (not `in_progress` or `closed`)
 - All blocking issues are `closed` (or has no blockers)
 
+## Multi-Agent Coordination
+
+When multiple LLM agents work on the same codebase, use claims to coordinate:
+
+```bash
+# Claim an issue (caller provides their session ID)
+ac claim ab-x7k2 --session claude-abc123
+# Sets status to in_progress, records session_id
+
+# See what you've claimed
+ac mine --session claude-abc123
+
+# Release when done or switching
+ac release ab-x7k2
+# Sets status back to open, clears session_id
+```
+
+Claiming prevents other agents from working on the same issue. The session ID is whatever the caller provides (e.g., Claude's session ID).
+
 ## Issue Types
 
 - `bug` - Something broken
