@@ -137,6 +137,35 @@ See README.md for full details.
 EOF
 ```
 
+## Step 5: Install Codex skill
+
+Install the `$ba` Codex skill files to enable ba commands in Claude Code sessions:
+
+```bash
+# Create skill directory
+SKILL_DIR="$HOME/.codex/skills/ba"
+mkdir -p "$SKILL_DIR"
+
+# TODO: Change branch to 'master' before merging PR
+# Currently using feature/ba-plugin for pre-merge testing
+echo "Installing ba Codex skill..."
+if curl -fsSL -o "$SKILL_DIR/SKILL.md" \
+  "https://raw.githubusercontent.com/cloud-atlas-ai/ba/feature/ba-plugin/codex-skill/SKILL.md" && \
+   curl -fsSL -o "$SKILL_DIR/AGENTS.md.snippet" \
+  "https://raw.githubusercontent.com/cloud-atlas-ai/ba/feature/ba-plugin/codex-skill/AGENTS.md.snippet"; then
+  echo "✓ Codex skill installed to $SKILL_DIR"
+  echo ""
+  echo "The \$ba skill is now available for:"
+  echo "  \$ba ready    - Show available issues"
+  echo "  \$ba claim    - Claim an issue"
+  echo "  \$ba mine     - Show your claimed issues"
+  echo "  \$ba finish   - Complete an issue"
+else
+  echo "⚠️  Failed to download Codex skill files"
+  echo "You can manually install from: https://github.com/cloud-atlas-ai/ba/tree/feature/ba-plugin/codex-skill"
+fi
+```
+
 ## Step 6: Verify SESSION_ID
 
 Check if SESSION_ID is available for ownership operations:
@@ -160,6 +189,7 @@ Tell user:
 ✓ ba initialized and ready
 
 Created .ba/ directory with project config
+Installed $ba Codex skill to ~/.codex/skills/ba/
 Added ba guidance to AGENTS.md
 
 Quick start:
@@ -167,7 +197,8 @@ Quick start:
   ba list
   ba claim <id> --session $SESSION_ID
 
-For Codex integration, use the $ba skill.
+Use $ba commands in Codex mode:
+  $ba ready, $ba claim <id>, $ba finish <id>
 ```
 
 ---
