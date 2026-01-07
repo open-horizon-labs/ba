@@ -47,10 +47,11 @@ claude plugin install ba@ba
 ```
 
 The plugin provides:
-- `/ba init` - Initialize ba in project, install binary if needed, setup AGENTS.md
+- `/ba init` - Install ba binary, initialize project, install Codex skill, setup AGENTS.md
 - `/ba status` - Show issue counts and your claimed work
 - `/ba quickstart` - Quick reference guide
-- `$ba` skill - Codex commands for task tracking
+
+After running `/ba init`, the `$ba` Codex skill will be available for task tracking commands.
 
 See [plugin/README.md](plugin/README.md) and [codex-skill/README.md](codex-skill/README.md) for details.
 

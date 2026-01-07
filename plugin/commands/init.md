@@ -137,7 +137,7 @@ See README.md for full details.
 EOF
 ```
 
-## Step 5: Verify SESSION_ID
+## Step 6: Verify SESSION_ID
 
 Check if SESSION_ID is available for ownership operations:
 
@@ -153,7 +153,7 @@ else
 fi
 ```
 
-## Step 6: Confirm
+## Step 7: Confirm
 
 Tell user:
 ```text
