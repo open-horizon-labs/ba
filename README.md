@@ -25,27 +25,34 @@ cargo install ba
 cargo build --release
 ```
 
-### Claude Code Integration
-
-**Plugin and Codex skill are available but not yet published to a marketplace.**
-
-Manual installation (after cloning this repo):
+### Claude Code Plugin
 
 ```bash
-# Install Codex skill
-mkdir -p ~/.codex/skills/ba
-cp codex-skill/SKILL.md ~/.codex/skills/ba/
-cp codex-skill/AGENTS.md.snippet ~/.codex/skills/ba/
+# Clone this repository
+git clone https://github.com/cloud-atlas-ai/ba.git
+cd ba
 
-# Add to your project's AGENTS.md
-tail -n +5 ~/.codex/skills/ba/AGENTS.md.snippet >> AGENTS.md
+# Add ba marketplace from local directory
+claude plugin marketplace add $PWD
+
+# Install ba plugin (includes Codex skill)
+claude plugin install ba@ba
 ```
 
-See detailed setup:
-- [plugin/README.md](plugin/README.md) - Plugin commands (slash commands)
-- [codex-skill/README.md](codex-skill/README.md) - Codex skill ($ba commands)
+After [PR #1](https://github.com/cloud-atlas-ai/ba/pull/1) merges to master:
+```bash
+# Simpler: install directly from GitHub
+claude plugin marketplace add https://github.com/cloud-atlas-ai/ba
+claude plugin install ba@ba
+```
 
-**Future:** `claude plugin install ba@ba-marketplace` (when published)
+The plugin provides:
+- `/ba init` - Initialize ba in project, install binary if needed, setup AGENTS.md
+- `/ba status` - Show issue counts and your claimed work
+- `/ba quickstart` - Quick reference guide
+- `$ba` skill - Codex commands for task tracking
+
+See [plugin/README.md](plugin/README.md) and [codex-skill/README.md](codex-skill/README.md) for details.
 
 ## Quick Start
 
