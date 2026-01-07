@@ -264,9 +264,24 @@ ba --json mine --session $SESSION_ID
 
 Issues stored in `.ba/issues.jsonl`:
 - One issue per line (JSONL format)
-- Git-friendly (conflicts are per-issue)
+- Git-friendly (conflicts are per-issue, not per-field)
 - Human-readable
 - Grep-able: `grep ab-x7k2 .ba/issues.jsonl`
+
+### Merge Conflicts
+
+When multiple agents modify issues concurrently, git conflicts occur at the line level (one line = one issue).
+
+**Resolution strategy:**
+1. Pull latest changes: `git pull`
+2. If conflicts occur, each conflicting issue will show both versions
+3. Choose the correct version (usually the one with latest `updated_at`)
+4. Validate JSON: `jq empty .ba/issues.jsonl`
+5. Commit the resolution
+
+**Prevention:** Always pull before starting work. Use `ba ready` to see current state.
+
+**Note:** ba does not detect conflicting edits automatically. The line-based format makes conflicts **obvious** (entire issue on one line) but not **automatic** to resolve. Consider this when coordinating multiple agents.
 
 ## Environment and SESSION_ID
 
@@ -274,7 +289,13 @@ Issues stored in `.ba/issues.jsonl`:
 
 The `$SESSION_ID` environment variable **must be set** for ownership operations (claim, mine, comment with --author).
 
-**Claude Code typically provides this automatically.** If commands fail with "SESSION_ID not set":
+**Verification:**
+```bash
+# Check if SESSION_ID is set
+echo ${SESSION_ID:-(not set - operations will fail)}
+```
+
+**Claude Code provides this automatically in active sessions.** If commands fail with "SESSION_ID not set":
 
 ```bash
 # Generate and export a session ID
@@ -301,15 +322,32 @@ This is intentional - ownership without identity doesn't make sense.
 
 If a Claude Code session crashes mid-task, the issue remains `in_progress` with a stale owner. ba currently has no automatic timeout/reclaim mechanism.
 
-**Workaround:**
+**Workaround for the original owner:**
 ```bash
-# Manually release stale issues
-ba release <id>   # If you were the owner
-# OR
-# Edit .ba/issues.jsonl to remove owner/claimed_at fields
+ba release <id>   # If you were the owner (SESSION_ID matches)
 ```
 
-**Future consideration:** Add `ba reclaim --force` or automatic timeout after N hours of inactivity.
+**Workaround for a different agent (manual intervention required):**
+```bash
+# 1. View the issue to see who owns it
+ba show <id>
+
+# 2. Manually edit .ba/issues.jsonl to remove owner/claimed_at fields
+# Find the line with the issue ID and set:
+#   "status": "open"
+#   "owner": null
+#   "claimed_at": null
+
+# 3. Now you can claim it
+ba claim <id> --session $SESSION_ID
+```
+
+**Important:** Manual JSON editing is fragile. Validate syntax after editing:
+```bash
+jq empty .ba/issues.jsonl  # Exit 0 = valid, non-zero = syntax error
+```
+
+**Future consideration:** Add `ba reclaim --force <id> --session $SESSION_ID` command to handle this safely.
 
 ## Quick Reference Card
 

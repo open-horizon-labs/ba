@@ -102,6 +102,7 @@ See README.md for full details.
 If `CLAUDE.md` already exists, append the ba section:
 
 ```bash
+# Quoted heredoc prevents $SESSION_ID expansion in CLAUDE.md
 cat >> CLAUDE.md << 'EOF'
 
 ## ba Task Tracking
@@ -136,7 +137,23 @@ See README.md for full details.
 EOF
 ```
 
-## Step 5: Confirm
+## Step 5: Verify SESSION_ID
+
+Check if SESSION_ID is available for ownership operations:
+
+```bash
+if [ -z "$SESSION_ID" ]; then
+  echo ""
+  echo "⚠️  SESSION_ID not set"
+  echo "Claude Code provides this automatically in active sessions."
+  echo "To set manually: export SESSION_ID=\$(uuidgen | tr '[:upper:]' '[:lower:]')"
+else
+  echo ""
+  echo "✓ SESSION_ID is set: $SESSION_ID"
+fi
+```
+
+## Step 6: Confirm
 
 Tell user:
 ```
