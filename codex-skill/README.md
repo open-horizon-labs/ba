@@ -16,22 +16,34 @@ The ba skill (`$ba`) gives Claude direct access to task-tracking commands with p
 
 ## Installation
 
-### Option 1: Via Plugin (Recommended)
+The Codex skill is automatically installed when you run `/ba init` in a project.
 
+### Step 1: Install the ba Plugin
+
+**For pre-merge testing (current):**
 ```bash
-claude plugin install ba
+git clone https://github.com/cloud-atlas-ai/ba.git
+cd ba
+git checkout feature/ba-plugin  # Plugin files are on feature branch
+claude plugin marketplace add $PWD
+claude plugin install ba@ba
 ```
 
-The plugin automatically installs the skill and provides the `/ba init` command.
+**After PR merge (future):**
+```bash
+git clone https://github.com/cloud-atlas-ai/ba.git
+cd ba
+claude plugin marketplace add $PWD
+claude plugin install ba@ba
+```
 
-### Option 2: Manual Installation
-
-Copy SKILL.md to your Codex skills directory:
+### Step 2: Initialize in Your Project
 
 ```bash
-mkdir -p ~/.codex/skills/ba
-cp SKILL.md ~/.codex/skills/ba/
+/ba init
 ```
+
+This installs the ba binary, runs `ba init`, downloads the `$ba` Codex skill files to `~/.codex/skills/ba/`, and updates `AGENTS.md`.
 
 ## Usage in Claude Code
 
