@@ -31,6 +31,7 @@ cargo build --release
 # Clone this repository
 git clone https://github.com/cloud-atlas-ai/ba.git
 cd ba
+git checkout feature/ba-plugin  # Plugin files are on feature branch (pre-merge)
 
 # Add ba marketplace from local directory
 claude plugin marketplace add $PWD
@@ -39,11 +40,17 @@ claude plugin marketplace add $PWD
 claude plugin install ba@ba
 ```
 
-After [PR #1](https://github.com/cloud-atlas-ai/ba/pull/1) merges to master:
+After PR merges to master:
 ```bash
-# Simpler: install directly from GitHub
-claude plugin marketplace add https://github.com/cloud-atlas-ai/ba
+# Simpler: no branch checkout needed
+git clone https://github.com/cloud-atlas-ai/ba.git
+cd ba
+claude plugin marketplace add $PWD
 claude plugin install ba@ba
+
+# Or install directly from GitHub URL:
+# claude plugin marketplace add https://github.com/cloud-atlas-ai/ba
+# claude plugin install ba@ba
 ```
 
 The plugin provides:
