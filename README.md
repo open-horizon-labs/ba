@@ -17,11 +17,43 @@ A spiritual fork of [beads](https://github.com/steveyegge/beads) (`bd`), keeping
 
 ## Installation
 
+### Binary
+
 ```bash
 cargo install ba
 # or build from source
 cargo build --release
 ```
+
+### Claude Code Plugin
+
+```bash
+# Clone this repository
+git clone https://github.com/cloud-atlas-ai/ba.git
+cd ba
+
+# Add ba marketplace from local directory
+claude plugin marketplace add $PWD
+
+# Install ba plugin (includes Codex skill)
+claude plugin install ba@ba
+```
+
+After [PR #1](https://github.com/cloud-atlas-ai/ba/pull/1) merges to master:
+```bash
+# Simpler: install directly from GitHub
+claude plugin marketplace add https://github.com/cloud-atlas-ai/ba
+claude plugin install ba@ba
+```
+
+The plugin provides:
+- `/ba init` - Install ba binary, initialize project, install Codex skill, setup AGENTS.md
+- `/ba status` - Show issue counts and your claimed work
+- `/ba quickstart` - Quick reference guide
+
+After running `/ba init`, the `$ba` Codex skill will be available for task tracking commands.
+
+See [plugin/README.md](plugin/README.md) and [codex-skill/README.md](codex-skill/README.md) for details.
 
 ## Quick Start
 

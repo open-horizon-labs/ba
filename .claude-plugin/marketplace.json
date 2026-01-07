@@ -1,0 +1,22 @@
+{
+  "name": "ba",
+  "owner": {
+    "name": "Cloud Atlas AI",
+    "email": "hello@cloudatlas.ai"
+  },
+  "metadata": {
+    "description": "ba plugin marketplace",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "ba",
+      "source": "./plugin",
+      "description": "Simple task tracking for LLM sessions - ownership-based workflow for multi-agent coordination",
+      "version": "0.2.1",
+      "author": {
+        "name": "Cloud Atlas AI"
+      }
+    }
+  ]
+}
