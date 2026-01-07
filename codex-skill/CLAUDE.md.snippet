@@ -1,0 +1,127 @@
+---
+CLAUDE.md Section for ba Task Tracking
+Copy this into your project's CLAUDE.md file
+---
+
+## ba Task Tracking
+
+This project uses ba for task tracking. Claude Code sessions should use ba to coordinate work.
+
+### Core Workflow
+
+1. **Check ready queue:**
+   ```bash
+   ba ready
+   ```
+   Shows open, unblocked issues sorted by priority.
+
+2. **Claim an issue:**
+   ```bash
+   ba claim <id> --session $SESSION_ID
+   ```
+   Takes ownership, moves to `in_progress`.
+
+3. **Work on it:**
+   - Make changes
+   - Run tests
+   - Document progress via comments
+
+4. **Complete or release:**
+   ```bash
+   ba finish <id>      # When done
+   ba release <id>     # If can't complete
+   ```
+
+### Quick Reference
+
+```bash
+# Browse and claim
+ba list                           # All open issues
+ba ready                          # Ready to work (open + unblocked)
+ba show <id>                      # Details before claiming
+ba claim <id> --session $SESSION_ID
+ba mine --session $SESSION_ID     # Your claimed issues
+
+# Work and document
+ba comment <id> "message" --author $SESSION_ID
+
+# Complete
+ba finish <id>                    # Done
+ba release <id>                   # Abandon
+
+# Create new
+ba create "title" -t task -p 1 -d "description"
+
+# Dependencies
+ba block <id> <blocker-id>        # Mark as blocked
+ba tree <id>                      # Visualize dependencies
+```
+
+### Ownership State Machine
+
+ba uses ownership-based state transitions:
+
+- `open` → **claim** → `in_progress` (you own it)
+- `in_progress` → **finish** → `closed` (work done)
+- `in_progress` → **release** → `open` (back to pool)
+
+**Key rule:** Every `in_progress` issue has an owner. Only the owner can finish or release.
+
+Claiming a `closed` issue automatically reopens it as `in_progress` with you as owner.
+
+### Issue Types
+
+- `task` - Default, general work item
+- `epic` - Container for grouping related issues
+- `refactor` - Improving existing code (no new behavior)
+- `spike` - Research/investigation (may not produce code)
+
+### Priorities
+
+- `0` - Critical (security, data loss, broken builds)
+- `1` - High (major features, important bugs)
+- `2` - Medium (default - nice-to-have features, minor bugs)
+- `3` - Low (polish, optimization)
+- `4` - Backlog (future ideas)
+
+### Multi-Agent Coordination
+
+When multiple LLM agents work on the same codebase:
+
+1. Each agent uses a unique `--session` identifier
+2. `ba claim` ensures exclusive ownership (prevents conflicts)
+3. `ba mine --session $SESSION_ID` shows only your work
+4. `ba ready` shows unclaimed work available to all agents
+
+The ownership model ensures no two agents work on the same issue simultaneously.
+
+### JSON Output
+
+All commands support `--json` for programmatic use:
+
+```bash
+ba --json ready
+ba --json mine --session $SESSION_ID
+ba --json show <id>
+```
+
+### Storage
+
+- Issues stored in `.ba/issues.jsonl` (one per line, git-friendly)
+- Config in `.ba/config.json`
+- Human-readable, grep-able
+
+### Codex Skill
+
+The `$ba` skill provides convenient access to ba commands in Codex mode:
+
+```
+$ba ready                    # See available work
+$ba claim <id>               # Claim with auto-session
+$ba mine                     # Your issues
+$ba finish <id>              # Complete
+$ba release <id>             # Abandon
+$ba show <id>                # Details
+```
+
+See `codex-skill/SKILL.md` for full skill documentation.

@@ -1,0 +1,11 @@
+{
+  "name": "ba",
+  "version": "0.2.1",
+  "description": "Simple task tracking for LLM sessions - ownership-based workflow for multi-agent coordination",
+  "author": {
+    "name": "Cloud Atlas AI",
+    "email": "hello@cloudatlas.ai",
+    "url": "https://github.com/cloud-atlas-ai"
+  },
+  "repository": "https://github.com/cloud-atlas-ai/ba"
+}
