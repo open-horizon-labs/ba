@@ -20,16 +20,13 @@ The Codex skill is automatically installed when you run `/ba init` in a project.
 
 ### Step 1: Install the ba Plugin
 
-**For pre-merge testing (current):**
+Install directly from GitHub:
 ```bash
-git clone https://github.com/cloud-atlas-ai/ba.git
-cd ba
-git checkout feature/ba-plugin  # Plugin files are on feature branch
-claude plugin marketplace add $PWD
+claude plugin marketplace add https://github.com/cloud-atlas-ai/ba
 claude plugin install ba@ba
 ```
 
-**After PR merge (future):**
+Or install from local clone:
 ```bash
 git clone https://github.com/cloud-atlas-ai/ba.git
 cd ba
