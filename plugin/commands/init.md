@@ -146,13 +146,11 @@ Install the `$ba` Codex skill files to enable ba commands in Claude Code session
 SKILL_DIR="$HOME/.codex/skills/ba"
 mkdir -p "$SKILL_DIR"
 
-# TODO: Change branch to 'master' before merging PR
-# Currently using feature/ba-plugin for pre-merge testing
 echo "Installing ba Codex skill..."
 if curl -fsSL -o "$SKILL_DIR/SKILL.md" \
-  "https://raw.githubusercontent.com/cloud-atlas-ai/ba/feature/ba-plugin/codex-skill/SKILL.md" && \
+  "https://raw.githubusercontent.com/cloud-atlas-ai/ba/master/codex-skill/SKILL.md" && \
    curl -fsSL -o "$SKILL_DIR/AGENTS.md.snippet" \
-  "https://raw.githubusercontent.com/cloud-atlas-ai/ba/feature/ba-plugin/codex-skill/AGENTS.md.snippet"; then
+  "https://raw.githubusercontent.com/cloud-atlas-ai/ba/master/codex-skill/AGENTS.md.snippet"; then
   echo "✓ Codex skill installed to $SKILL_DIR"
   echo ""
   echo "The \$ba skill is now available for:"
@@ -162,7 +160,7 @@ if curl -fsSL -o "$SKILL_DIR/SKILL.md" \
   echo "  \$ba finish   - Complete an issue"
 else
   echo "⚠️  Failed to download Codex skill files"
-  echo "You can manually install from: https://github.com/cloud-atlas-ai/ba/tree/feature/ba-plugin/codex-skill"
+  echo "You can manually install from: https://github.com/cloud-atlas-ai/ba/tree/master/codex-skill"
 fi
 ```
 
