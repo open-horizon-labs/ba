@@ -447,6 +447,7 @@ enum Commands {
     Init,
 
     /// Create a new issue
+    #[command(visible_alias = "add", visible_alias = "new")]
     Create {
         /// Issue title
         title: String,
