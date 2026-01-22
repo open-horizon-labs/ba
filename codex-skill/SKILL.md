@@ -265,6 +265,7 @@ ba --json mine --session $SESSION_ID
 Issues stored in `.ba/issues.jsonl`:
 - One issue per line (JSONL format)
 - Git-friendly (conflicts are per-issue, not per-field)
+- Sorted by ID (stable ordering for conflict resolution)
 - Human-readable
 - Grep-able: `grep ab-x7k2 .ba/issues.jsonl`
 
