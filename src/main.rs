@@ -1641,18 +1641,41 @@ fn truncate(s: &str, max: usize) -> String {
 // Main
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Walk up from cwd looking for a `.ba/` directory, like git finds `.git/`.
+/// Returns the absolute path to the `.ba/` dir, or None if not found.
+fn find_ba_dir() -> Option<PathBuf> {
+    let mut dir = std::env::current_dir().ok()?;
+    loop {
+        let candidate = dir.join(".ba");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
+    // Walk up to find .ba/ (like git finds .git/) when --dir is the default.
+    // If the user explicitly passed --dir, use it as-is.
+    let dir = if cli.dir == PathBuf::from(".ba") {
+        find_ba_dir().unwrap_or(cli.dir)
+    } else {
+        cli.dir
+    };
+
     let result = match cli.command {
-        Commands::Init => cmd_init(&cli.dir),
+        Commands::Init => cmd_init(&dir),
         Commands::Quickstart => {
             cmd_quickstart();
             Ok(())
         }
         _ => {
             // All other commands need a loaded store
-            match Store::load(&cli.dir) {
+            match Store::load(&dir) {
                 Ok(mut store) => match cli.command {
                     Commands::Init | Commands::Quickstart => unreachable!(),
                     Commands::Create {
