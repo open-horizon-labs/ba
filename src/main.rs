@@ -5,15 +5,18 @@
 
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const ISSUES_FILE: &str = "issues.jsonl";
 const CONFIG_FILE: &str = "config.json";
+const LOCK_FILE: &str = "issues.lock";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Data Types
@@ -74,7 +77,10 @@ impl std::str::FromStr for IssueType {
             "epic" => Ok(IssueType::Epic),
             "refactor" => Ok(IssueType::Refactor),
             "spike" => Ok(IssueType::Spike),
-            _ => Err(format!("Unknown issue type: {} (valid: task, epic, refactor, spike)", s)),
+            _ => Err(format!(
+                "Unknown issue type: {} (valid: task, epic, refactor, spike)",
+                s
+            )),
         }
     }
 }
@@ -146,14 +152,17 @@ impl Issue {
             }
 
             // Claim: Open + already claimed by same session
-            (Status::Open, Some(existing), Transition::Claim { session }) if existing == &session => {
+            (Status::Open, Some(existing), Transition::Claim { session })
+                if existing == &session =>
+            {
                 Err(format!("{} already claimed by this session", self.id))
             }
 
             // Claim: Open + already claimed by different session
-            (Status::Open, Some(existing), Transition::Claim { .. }) => {
-                Err(format!("{} already claimed by session {}", self.id, existing))
-            }
+            (Status::Open, Some(existing), Transition::Claim { .. }) => Err(format!(
+                "{} already claimed by session {}",
+                self.id, existing
+            )),
 
             // Claim: Closed → InProgress (reopen)
             (Status::Closed, _, Transition::Claim { session }) => {
@@ -165,13 +174,16 @@ impl Issue {
             }
 
             // Claim: InProgress + already claimed
-            (Status::InProgress, Some(existing), Transition::Claim { session }) if existing == &session => {
+            (Status::InProgress, Some(existing), Transition::Claim { session })
+                if existing == &session =>
+            {
                 Err(format!("{} already claimed by this session", self.id))
             }
 
-            (Status::InProgress, Some(existing), Transition::Claim { .. }) => {
-                Err(format!("{} already claimed by session {}", self.id, existing))
-            }
+            (Status::InProgress, Some(existing), Transition::Claim { .. }) => Err(format!(
+                "{} already claimed by session {}",
+                self.id, existing
+            )),
 
             // Release: InProgress + claimed → Open
             (Status::InProgress, Some(_), Transition::Release) => {
@@ -182,14 +194,10 @@ impl Issue {
             }
 
             // Release: not claimed
-            (_, None, Transition::Release) => {
-                Err(format!("{} is not claimed", self.id))
-            }
+            (_, None, Transition::Release) => Err(format!("{} is not claimed", self.id)),
 
             // Release: not in progress (but claimed somehow - shouldn't happen)
-            (_, Some(_), Transition::Release) => {
-                Err(format!("{} is not in progress", self.id))
-            }
+            (_, Some(_), Transition::Release) => Err(format!("{} is not in progress", self.id)),
 
             // Finish: InProgress + claimed → Closed
             (Status::InProgress, Some(_), Transition::Finish) => {
@@ -201,9 +209,10 @@ impl Issue {
             }
 
             // Finish: not claimed
-            (_, None, Transition::Finish) => {
-                Err(format!("{} is not claimed. Use 'close' for unclaimed issues.", self.id))
-            }
+            (_, None, Transition::Finish) => Err(format!(
+                "{} is not claimed. Use 'close' for unclaimed issues.",
+                self.id
+            )),
 
             // Finish: already closed
             (Status::Closed, _, Transition::Finish) => {
@@ -224,17 +233,13 @@ impl Issue {
             }
 
             // Close: already closed
-            (Status::Closed, _, Transition::Close) => {
-                Err(format!("{} is already closed", self.id))
-            }
+            (Status::Closed, _, Transition::Close) => Err(format!("{} is already closed", self.id)),
 
             // Close: claimed - must release first or use finish
-            (_, Some(session), Transition::Close) => {
-                Err(format!(
-                    "{} is claimed by session {}. Use 'release' first, or 'finish' to complete.",
-                    self.id, session
-                ))
-            }
+            (_, Some(session), Transition::Close) => Err(format!(
+                "{} is claimed by session {}. Use 'release' first, or 'finish' to complete.",
+                self.id, session
+            )),
 
             // Invalid states (InProgress without session shouldn't exist)
             (Status::InProgress, None, Transition::Claim { session }) => {
@@ -297,10 +302,16 @@ struct ImportError {
 impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.issue_id {
-            Some(id) => write!(f, "Line {}: Issue '{}' - {}: {}",
-                self.line_num, id, self.field, self.message),
-            None => write!(f, "Line {}: {}: {}",
-                self.line_num, self.field, self.message),
+            Some(id) => write!(
+                f,
+                "Line {}: Issue '{}' - {}: {}",
+                self.line_num, id, self.field, self.message
+            ),
+            None => write!(
+                f,
+                "Line {}: {}: {}",
+                self.line_num, self.field, self.message
+            ),
         }
     }
 }
@@ -319,16 +330,31 @@ struct Store {
     config: Config,
     issues: HashMap<String, Issue>,
     ba_dir: PathBuf,
+    _lock_file: File,
 }
 
 impl Store {
     fn load(ba_dir: &Path) -> Result<Self, String> {
+        let lock_path = ba_dir.join(LOCK_FILE);
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| format!("Failed to open lock file '{}': {}", lock_path.display(), e))?;
+        lock_file.lock_exclusive().map_err(|e| {
+            format!(
+                "Failed to acquire store lock '{}': {}",
+                lock_path.display(),
+                e
+            )
+        })?;
+
         let config_path = ba_dir.join(CONFIG_FILE);
         let config: Config = if config_path.exists() {
             let content = fs::read_to_string(&config_path)
                 .map_err(|e| format!("Failed to read config: {}", e))?;
-            serde_json::from_str(&content)
-                .map_err(|e| format!("Failed to parse config: {}", e))?
+            serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))?
         } else {
             return Err("Not initialized. Run 'ba init' first.".to_string());
         };
@@ -339,13 +365,15 @@ impl Store {
             let file = File::open(&issues_path)
                 .map_err(|e| format!("Failed to open issues file: {}", e))?;
             let reader = BufReader::new(file);
-            for line in reader.lines() {
-                let line = line.map_err(|e| format!("Failed to read line: {}", e))?;
+            for (index, line) in reader.lines().enumerate() {
+                let line_num = index + 1;
+                let line =
+                    line.map_err(|e| format!("Failed to read issues line {}: {}", line_num, e))?;
                 if line.trim().is_empty() {
                     continue;
                 }
                 let issue: Issue = serde_json::from_str(&line)
-                    .map_err(|e| format!("Failed to parse issue: {}", e))?;
+                    .map_err(|e| format!("Failed to parse issue at line {}: {}", line_num, e))?;
                 issues.insert(issue.id.clone(), issue);
             }
         }
@@ -354,6 +382,7 @@ impl Store {
             config,
             issues,
             ba_dir: ba_dir.to_path_buf(),
+            _lock_file: lock_file,
         })
     }
 
@@ -363,17 +392,27 @@ impl Store {
         sorted.sort_by(|a, b| a.id.cmp(&b.id));
 
         let issues_path = self.ba_dir.join(ISSUES_FILE);
-        let tmp_path = self.ba_dir.join("issues.jsonl.tmp");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| format!("Failed to read system clock: {}", e))?
+            .as_nanos();
+        let tmp_path =
+            self.ba_dir
+                .join(format!("issues.jsonl.tmp.{}.{}", std::process::id(), nonce));
 
-        let mut file = File::create(&tmp_path)
-            .map_err(|e| format!("Failed to create temp file: {}", e))?;
+        let mut file =
+            File::create(&tmp_path).map_err(|e| format!("Failed to create temp file: {}", e))?;
 
         for issue in sorted {
             let line = serde_json::to_string(issue)
                 .map_err(|e| format!("Failed to serialize issue: {}", e))?;
-            writeln!(file, "{}", line)
-                .map_err(|e| format!("Failed to write issue: {}", e))?;
+            writeln!(file, "{}", line).map_err(|e| format!("Failed to write issue: {}", e))?;
         }
+
+        file.flush()
+            .map_err(|e| format!("Failed to flush temp file: {}", e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync temp file: {}", e))?;
 
         fs::rename(&tmp_path, &issues_path)
             .map_err(|e| format!("Failed to rename temp file: {}", e))?;
@@ -492,6 +531,18 @@ enum Commands {
         reason: Option<String>,
     },
 
+    /// Delete issues by label selector
+    Delete {
+        /// Exact label match (e.g. factory:bloodwork:skeleton)
+        #[arg(long)]
+        label: Option<String>,
+        /// Label prefix match (e.g. factory:bloodwork:)
+        #[arg(long = "label-prefix")]
+        label_prefix: Option<String>,
+        /// Also delete open/in_progress issues (default: only closed)
+        #[arg(long)]
+        force: bool,
+    },
     /// Add a blocking dependency (blocker blocks id)
     Block {
         /// Issue that is blocked
@@ -599,12 +650,11 @@ fn cmd_init(ac_dir: &Path) -> Result<(), String> {
         return Err(format!("{} already exists", ac_dir.display()));
     }
 
-    fs::create_dir_all(ac_dir)
-        .map_err(|e| format!("Failed to create directory: {}", e))?;
+    fs::create_dir_all(ac_dir).map_err(|e| format!("Failed to create directory: {}", e))?;
 
     // Generate prefix from current directory hash
-    let cwd = std::env::current_dir()
-        .map_err(|e| format!("Failed to get current directory: {}", e))?;
+    let cwd =
+        std::env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
     let cwd_str = cwd.to_string_lossy();
     let mut hasher = Sha256::new();
     hasher.update(cwd_str.as_bytes());
@@ -627,15 +677,17 @@ fn cmd_init(ac_dir: &Path) -> Result<(), String> {
     let config_path = ac_dir.join(CONFIG_FILE);
     let config_json = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&config_path, config_json)
-        .map_err(|e| format!("Failed to write config: {}", e))?;
+    fs::write(&config_path, config_json).map_err(|e| format!("Failed to write config: {}", e))?;
 
     // Create empty issues file
     let issues_path = ac_dir.join(ISSUES_FILE);
-    File::create(&issues_path)
-        .map_err(|e| format!("Failed to create issues file: {}", e))?;
+    File::create(&issues_path).map_err(|e| format!("Failed to create issues file: {}", e))?;
 
-    println!("Initialized {} with prefix '{}'", ac_dir.display(), config.prefix);
+    println!(
+        "Initialized {} with prefix '{}'",
+        ac_dir.display(),
+        config.prefix
+    );
     Ok(())
 }
 
@@ -685,7 +737,12 @@ fn cmd_create(
     Ok(())
 }
 
-fn cmd_list(store: &Store, status_filter: Option<String>, all: bool, json_output: bool) -> Result<(), String> {
+fn cmd_list(
+    store: &Store,
+    status_filter: Option<String>,
+    all: bool,
+    json_output: bool,
+) -> Result<(), String> {
     let mut issues: Vec<_> = store.issues.values().collect();
 
     // Filter
@@ -703,7 +760,9 @@ fn cmd_list(store: &Store, status_filter: Option<String>, all: bool, json_output
 
     // Sort by priority, then by created_at
     issues.sort_by(|a, b| {
-        a.priority.cmp(&b.priority).then_with(|| a.created_at.cmp(&b.created_at))
+        a.priority
+            .cmp(&b.priority)
+            .then_with(|| a.created_at.cmp(&b.created_at))
     });
 
     if json_output {
@@ -736,17 +795,29 @@ fn cmd_list(store: &Store, status_filter: Option<String>, all: bool, json_output
     }
 
     let open = issues.iter().filter(|i| i.status == Status::Open).count();
-    let in_progress = issues.iter().filter(|i| i.status == Status::InProgress).count();
+    let in_progress = issues
+        .iter()
+        .filter(|i| i.status == Status::InProgress)
+        .count();
     let closed = issues.iter().filter(|i| i.status == Status::Closed).count();
 
     println!();
-    println!("{} issues ({} open, {} in_progress, {} closed)", issues.len(), open, in_progress, closed);
+    println!(
+        "{} issues ({} open, {} in_progress, {} closed)",
+        issues.len(),
+        open,
+        in_progress,
+        closed
+    );
 
     Ok(())
 }
 
 fn cmd_show(store: &Store, id: &str, json_output: bool) -> Result<(), String> {
-    let issue = store.issues.get(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+    let issue = store
+        .issues
+        .get(id)
+        .ok_or_else(|| format!("Issue not found: {}", id))?;
 
     if json_output {
         println!("{}", serde_json::to_string_pretty(issue).unwrap());
@@ -756,7 +827,10 @@ fn cmd_show(store: &Store, id: &str, json_output: bool) -> Result<(), String> {
     println!();
     println!("{}: {}", issue.id, issue.title);
     println!("{}", "-".repeat(60));
-    println!("Status:   {:<16} Priority: P{}", issue.status, issue.priority);
+    println!(
+        "Status:   {:<16} Priority: P{}",
+        issue.status, issue.priority
+    );
     println!("Type:     {}", issue.issue_type);
     if let Some(ref session) = issue.session_id {
         println!("Session:  {}", session);
@@ -786,7 +860,8 @@ fn cmd_show(store: &Store, id: &str, json_output: bool) -> Result<(), String> {
         println!();
         println!("Comments ({}):", issue.comments.len());
         for comment in &issue.comments {
-            println!("  [{}] {}: {}",
+            println!(
+                "  [{}] {}: {}",
                 comment.created_at.format("%Y-%m-%d %H:%M"),
                 comment.author,
                 comment.text
@@ -797,8 +872,16 @@ fn cmd_show(store: &Store, id: &str, json_output: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_close(store: &mut Store, id: &str, _reason: Option<String>, json_output: bool) -> Result<(), String> {
-    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+fn cmd_close(
+    store: &mut Store,
+    id: &str,
+    _reason: Option<String>,
+    json_output: bool,
+) -> Result<(), String> {
+    let issue = store
+        .issues
+        .get_mut(id)
+        .ok_or_else(|| format!("Issue not found: {}", id))?;
 
     issue.apply(Transition::Close)?;
 
@@ -814,6 +897,108 @@ fn cmd_close(store: &mut Store, id: &str, _reason: Option<String>, json_output: 
     Ok(())
 }
 
+fn cmd_delete(
+    store: &mut Store,
+    label: Option<String>,
+    label_prefix: Option<String>,
+    force: bool,
+    json_output: bool,
+) -> Result<(), String> {
+    let selector_count = usize::from(label.is_some()) + usize::from(label_prefix.is_some());
+    if selector_count != 1 {
+        return Err(
+            "Provide exactly one selector: --label <label> or --label-prefix <prefix>".to_string(),
+        );
+    }
+
+    let selector_desc = match (&label, &label_prefix) {
+        (Some(value), None) => format!("label '{}'", value),
+        (None, Some(value)) => format!("label prefix '{}'", value),
+        _ => unreachable!("selector_count validated above"),
+    };
+
+    let mut matched_ids: Vec<String> = store
+        .issues
+        .values()
+        .filter(|issue| match (&label, &label_prefix) {
+            (Some(value), None) => issue.labels.iter().any(|existing| existing == value),
+            (None, Some(prefix)) => issue
+                .labels
+                .iter()
+                .any(|existing| existing.starts_with(prefix)),
+            _ => false,
+        })
+        .map(|issue| issue.id.clone())
+        .collect();
+    matched_ids.sort();
+
+    if matched_ids.is_empty() {
+        return Err(format!("No issues matched {}", selector_desc));
+    }
+
+    if !force {
+        let non_closed: Vec<String> = matched_ids
+            .iter()
+            .filter_map(|id| {
+                store.issues.get(id).and_then(|issue| {
+                    if issue.status == Status::Closed {
+                        None
+                    } else {
+                        Some(id.clone())
+                    }
+                })
+            })
+            .collect();
+
+        if !non_closed.is_empty() {
+            return Err(format!(
+                "Refusing to delete non-closed issues without --force: {}",
+                non_closed.join(", ")
+            ));
+        }
+    }
+
+    let delete_set: std::collections::HashSet<String> = matched_ids.iter().cloned().collect();
+    let now = Utc::now();
+
+    for issue in store.issues.values_mut() {
+        let blocks_before = issue.blocks.len();
+        let blocked_by_before = issue.blocked_by.len();
+
+        issue.blocks.retain(|dep| !delete_set.contains(dep));
+        issue.blocked_by.retain(|dep| !delete_set.contains(dep));
+
+        if issue.blocks.len() != blocks_before || issue.blocked_by.len() != blocked_by_before {
+            issue.updated_at = now;
+        }
+    }
+
+    for id in &matched_ids {
+        store.issues.remove(id);
+    }
+
+    store.save()?;
+
+    let deleted_count = matched_ids.len();
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "selector": selector_desc,
+                "deleted": matched_ids,
+                "count": deleted_count,
+                "force": force
+            })
+        );
+    } else {
+        println!(
+            "Deleted {} issue(s) matching {}",
+            deleted_count, selector_desc
+        );
+    }
+
+    Ok(())
+}
 fn cmd_block(store: &mut Store, id: &str, blocker: &str, json_output: bool) -> Result<(), String> {
     if id == blocker {
         return Err("Issue cannot block itself".to_string());
@@ -859,7 +1044,12 @@ fn cmd_block(store: &mut Store, id: &str, blocker: &str, json_output: bool) -> R
     Ok(())
 }
 
-fn cmd_unblock(store: &mut Store, id: &str, blocker: &str, json_output: bool) -> Result<(), String> {
+fn cmd_unblock(
+    store: &mut Store,
+    id: &str,
+    blocker: &str,
+    json_output: bool,
+) -> Result<(), String> {
     // Verify both issues exist
     if !store.issues.contains_key(id) {
         return Err(format!("Issue not found: {}", id));
@@ -901,7 +1091,10 @@ fn cmd_unblock(store: &mut Store, id: &str, blocker: &str, json_output: bool) ->
 }
 
 fn cmd_tree(store: &Store, id: &str, json_output: bool) -> Result<(), String> {
-    let issue = store.issues.get(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+    let issue = store
+        .issues
+        .get(id)
+        .ok_or_else(|| format!("Issue not found: {}", id))?;
 
     if json_output {
         // Build tree structure as JSON
@@ -944,7 +1137,14 @@ fn build_tree_json(store: &Store, id: &str, visited: &mut Vec<String>) -> serde_
     })
 }
 
-fn print_tree_node(store: &Store, issue: &Issue, prefix: &str, is_root: bool, is_last: bool, visited: &mut Vec<String>) {
+fn print_tree_node(
+    store: &Store,
+    issue: &Issue,
+    prefix: &str,
+    is_root: bool,
+    is_last: bool,
+    visited: &mut Vec<String>,
+) {
     let status_tag = match issue.status {
         Status::Open => "[OPEN]",
         Status::InProgress => "[IN_PROGRESS]",
@@ -956,17 +1156,35 @@ fn print_tree_node(store: &Store, issue: &Issue, prefix: &str, is_root: bool, is
             println!("{}: {} [CYCLE]", issue.id, truncate(&issue.title, 30));
         } else {
             let connector = if is_last { "└── " } else { "├── " };
-            println!("{}{}{}: {} [CYCLE]", prefix, connector, issue.id, truncate(&issue.title, 30));
+            println!(
+                "{}{}{}: {} [CYCLE]",
+                prefix,
+                connector,
+                issue.id,
+                truncate(&issue.title, 30)
+            );
         }
         return;
     }
     visited.push(issue.id.clone());
 
     if is_root {
-        println!("{}: {} {}", issue.id, truncate(&issue.title, 30), status_tag);
+        println!(
+            "{}: {} {}",
+            issue.id,
+            truncate(&issue.title, 30),
+            status_tag
+        );
     } else {
         let connector = if is_last { "└── " } else { "├── " };
-        println!("{}{}{}: {} {}", prefix, connector, issue.id, truncate(&issue.title, 30), status_tag);
+        println!(
+            "{}{}{}: {} {}",
+            prefix,
+            connector,
+            issue.id,
+            truncate(&issue.title, 30),
+            status_tag
+        );
     }
 
     let new_prefix = if is_root {
@@ -983,7 +1201,11 @@ fn print_tree_node(store: &Store, issue: &Issue, prefix: &str, is_root: bool, is
         if let Some(blocker) = store.issues.get(blocker_id) {
             print_tree_node(store, blocker, &new_prefix, false, is_last_child, visited);
         } else {
-            let child_connector = if is_last_child { "└── " } else { "├── " };
+            let child_connector = if is_last_child {
+                "└── "
+            } else {
+                "├── "
+            };
             println!("{}{}{} [MISSING]", new_prefix, child_connector, blocker_id);
         }
     }
@@ -1004,7 +1226,10 @@ fn cmd_cycles(store: &Store, json_output: bool) -> Result<(), String> {
     let mut unbaue_cycles: Vec<Vec<String>> = vec![];
     for cycle in cycles {
         let normalized = normalize_cycle(&cycle);
-        if !unbaue_cycles.iter().any(|c| normalize_cycle(c) == normalized) {
+        if !unbaue_cycles
+            .iter()
+            .any(|c| normalize_cycle(c) == normalized)
+        {
             unbaue_cycles.push(cycle);
         }
     }
@@ -1074,9 +1299,14 @@ fn normalize_cycle(cycle: &[String]) -> Vec<String> {
 }
 
 fn cmd_claim(store: &mut Store, id: &str, session: &str, json_output: bool) -> Result<(), String> {
-    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+    let issue = store
+        .issues
+        .get_mut(id)
+        .ok_or_else(|| format!("Issue not found: {}", id))?;
 
-    issue.apply(Transition::Claim { session: session.to_string() })?;
+    issue.apply(Transition::Claim {
+        session: session.to_string(),
+    })?;
 
     let issue_clone = issue.clone();
     store.save()?;
@@ -1091,7 +1321,10 @@ fn cmd_claim(store: &mut Store, id: &str, session: &str, json_output: bool) -> R
 }
 
 fn cmd_release(store: &mut Store, id: &str, json_output: bool) -> Result<(), String> {
-    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+    let issue = store
+        .issues
+        .get_mut(id)
+        .ok_or_else(|| format!("Issue not found: {}", id))?;
 
     let old_session = issue.apply(Transition::Release)?;
 
@@ -1108,7 +1341,10 @@ fn cmd_release(store: &mut Store, id: &str, json_output: bool) -> Result<(), Str
 }
 
 fn cmd_finish(store: &mut Store, id: &str, json_output: bool) -> Result<(), String> {
-    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+    let issue = store
+        .issues
+        .get_mut(id)
+        .ok_or_else(|| format!("Issue not found: {}", id))?;
 
     let old_session = issue.apply(Transition::Finish)?;
 
@@ -1148,10 +1384,7 @@ fn cmd_mine(store: &Store, session: &str, json_output: bool) -> Result<(), Strin
     }
 
     println!();
-    println!(
-        "  {:<8} {:>2}  {:<8} {}",
-        "ID", "P", "TYPE", "TITLE"
-    );
+    println!("  {:<8} {:>2}  {:<8} {}", "ID", "P", "TYPE", "TITLE");
     println!("  {}", "-".repeat(60));
 
     for issue in &mine {
@@ -1170,8 +1403,17 @@ fn cmd_mine(store: &Store, session: &str, json_output: bool) -> Result<(), Strin
     Ok(())
 }
 
-fn cmd_label(store: &mut Store, id: &str, action: &str, label: &str, json_output: bool) -> Result<(), String> {
-    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+fn cmd_label(
+    store: &mut Store,
+    id: &str,
+    action: &str,
+    label: &str,
+    json_output: bool,
+) -> Result<(), String> {
+    let issue = store
+        .issues
+        .get_mut(id)
+        .ok_or_else(|| format!("Issue not found: {}", id))?;
 
     match action {
         "add" => {
@@ -1187,7 +1429,12 @@ fn cmd_label(store: &mut Store, id: &str, action: &str, label: &str, json_output
             }
             issue.labels.retain(|l| l != label);
         }
-        _ => return Err(format!("Unknown action: {} (use 'add' or 'remove')", action)),
+        _ => {
+            return Err(format!(
+                "Unknown action: {} (use 'add' or 'remove')",
+                action
+            ));
+        }
     }
 
     issue.updated_at = Utc::now();
@@ -1197,7 +1444,8 @@ fn cmd_label(store: &mut Store, id: &str, action: &str, label: &str, json_output
     if json_output {
         println!("{}", serde_json::to_string(&issue_clone).unwrap());
     } else {
-        println!("{} label '{}' {} {}",
+        println!(
+            "{} label '{}' {} {}",
             if action == "add" { "Added" } else { "Removed" },
             label,
             if action == "add" { "to" } else { "from" },
@@ -1213,7 +1461,10 @@ fn cmd_priority(store: &mut Store, id: &str, value: u8, json_output: bool) -> Re
         return Err("Priority must be 0-4".to_string());
     }
 
-    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+    let issue = store
+        .issues
+        .get_mut(id)
+        .ok_or_else(|| format!("Issue not found: {}", id))?;
 
     let old_priority = issue.priority;
     issue.priority = value;
@@ -1231,8 +1482,17 @@ fn cmd_priority(store: &mut Store, id: &str, value: u8, json_output: bool) -> Re
     Ok(())
 }
 
-fn cmd_comment(store: &mut Store, id: &str, text: &str, author: &str, json_output: bool) -> Result<(), String> {
-    let issue = store.issues.get_mut(id).ok_or_else(|| format!("Issue not found: {}", id))?;
+fn cmd_comment(
+    store: &mut Store,
+    id: &str,
+    text: &str,
+    author: &str,
+    json_output: bool,
+) -> Result<(), String> {
+    let issue = store
+        .issues
+        .get_mut(id)
+        .ok_or_else(|| format!("Issue not found: {}", id))?;
 
     let comment = Comment {
         author: author.to_string(),
@@ -1249,17 +1509,26 @@ fn cmd_comment(store: &mut Store, id: &str, text: &str, author: &str, json_outpu
     if json_output {
         println!("{}", serde_json::to_string(&comment).unwrap());
     } else {
-        println!("Added comment to {} ({} comments total)", id, issue_clone.comments.len());
+        println!(
+            "Added comment to {} ({} comments total)",
+            id,
+            issue_clone.comments.len()
+        );
     }
 
     Ok(())
 }
 
-fn cmd_import(store: &mut Store, file: &Path, keep_ids: bool, json_output: bool) -> Result<(), String> {
+fn cmd_import(
+    store: &mut Store,
+    file: &Path,
+    keep_ids: bool,
+    json_output: bool,
+) -> Result<(), String> {
     use std::io::BufRead;
 
-    let file_handle = File::open(file)
-        .map_err(|e| format!("Failed to open '{}': {}", file.display(), e))?;
+    let file_handle =
+        File::open(file).map_err(|e| format!("Failed to open '{}': {}", file.display(), e))?;
     let reader = BufReader::new(file_handle);
 
     let mut imported = 0;
@@ -1303,7 +1572,10 @@ fn cmd_import(store: &mut Store, file: &Path, keep_ids: bool, json_output: bool)
             }
         };
 
-        let issue_id = raw.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let issue_id = raw
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
 
         // Now parse as BeadsIssue
         let beads_issue: BeadsIssue = match serde_json::from_value(raw.clone()) {
@@ -1370,7 +1642,10 @@ fn cmd_import(store: &mut Store, file: &Path, keep_ids: bool, json_output: bool)
                     line_num,
                     issue_id: Some(beads.id.clone()),
                     field: "status".to_string(),
-                    message: format!("Unknown status '{}', expected open/in_progress/closed", other),
+                    message: format!(
+                        "Unknown status '{}', expected open/in_progress/closed",
+                        other
+                    ),
                 });
                 continue;
             }
@@ -1481,10 +1756,19 @@ fn cmd_import(store: &mut Store, file: &Path, keep_ids: bool, json_output: bool)
     store.save()?;
 
     if json_output {
-        println!(r#"{{"imported":{},"skipped":{},"errors":{}}}"#,
-            imported, skipped, errors.len());
+        println!(
+            r#"{{"imported":{},"skipped":{},"errors":{}}}"#,
+            imported,
+            skipped,
+            errors.len()
+        );
     } else {
-        println!("Imported {} issues ({} skipped, {} errors)", imported, skipped, errors.len());
+        println!(
+            "Imported {} issues ({} skipped, {} errors)",
+            imported,
+            skipped,
+            errors.len()
+        );
         if !errors.is_empty() {
             println!();
             println!("Errors:");
@@ -1498,7 +1782,8 @@ fn cmd_import(store: &mut Store, file: &Path, keep_ids: bool, json_output: bool)
 }
 
 fn cmd_quickstart() {
-    println!(r#"
+    println!(
+        r#"
 ba - Simple Task Tracking for LLM Sessions
 
 GETTING STARTED
@@ -1534,6 +1819,9 @@ MODIFYING ISSUES
   ba label <id> remove urgent         Remove a label
   ba comment <id> "text" --author X   Add a comment
 
+  ba delete --label factory:bloodwork:skeleton
+  ba delete --label-prefix factory:bloodwork:
+  ba delete --label-prefix factory:bloodwork: --force  Delete even open/in_progress
 DEPENDENCIES
   ba block <id> <blocker>    Mark <id> blocked by <blocker>
   ba unblock <id> <blocker>  Remove block
@@ -1565,7 +1853,8 @@ DISCOVERING NEW WORK
   1. ba create "Found bug in X" -t bug -p 1
   2. ba block <current_id> <new_id>    # If it blocks current work
   3. ba tree <current_id>              # Verify dependency chain
-"#);
+"#
+    );
 }
 
 fn cmd_ready(store: &Store, json_output: bool) -> Result<(), String> {
@@ -1607,10 +1896,7 @@ fn cmd_ready(store: &Store, json_output: bool) -> Result<(), String> {
     }
 
     println!();
-    println!(
-        "  {:<8} {:>2}  {:<8} {}",
-        "ID", "P", "TYPE", "TITLE"
-    );
+    println!("  {:<8} {:>2}  {:<8} {}", "ID", "P", "TYPE", "TITLE");
     println!("  {}", "-".repeat(60));
 
     for issue in &ready {
@@ -1683,23 +1969,49 @@ fn main() {
                         issue_type,
                         priority,
                         description,
-                    } => cmd_create(&mut store, title, issue_type, priority, description, cli.json),
+                    } => cmd_create(
+                        &mut store,
+                        title,
+                        issue_type,
+                        priority,
+                        description,
+                        cli.json,
+                    ),
                     Commands::List { status, all } => cmd_list(&store, status, all, cli.json),
                     Commands::Show { id } => cmd_show(&store, &id, cli.json),
                     Commands::Close { id, reason } => cmd_close(&mut store, &id, reason, cli.json),
-                    Commands::Block { id, blocker } => cmd_block(&mut store, &id, &blocker, cli.json),
-                    Commands::Unblock { id, blocker } => cmd_unblock(&mut store, &id, &blocker, cli.json),
+                    Commands::Delete {
+                        label,
+                        label_prefix,
+                        force,
+                    } => cmd_delete(&mut store, label, label_prefix, force, cli.json),
+                    Commands::Block { id, blocker } => {
+                        cmd_block(&mut store, &id, &blocker, cli.json)
+                    }
+                    Commands::Unblock { id, blocker } => {
+                        cmd_unblock(&mut store, &id, &blocker, cli.json)
+                    }
                     Commands::Tree { id } => cmd_tree(&store, &id, cli.json),
                     Commands::Cycles => cmd_cycles(&store, cli.json),
                     Commands::Ready => cmd_ready(&store, cli.json),
-                    Commands::Claim { id, session } => cmd_claim(&mut store, &id, &session, cli.json),
+                    Commands::Claim { id, session } => {
+                        cmd_claim(&mut store, &id, &session, cli.json)
+                    }
                     Commands::Release { id } => cmd_release(&mut store, &id, cli.json),
                     Commands::Finish { id } => cmd_finish(&mut store, &id, cli.json),
                     Commands::Mine { session } => cmd_mine(&store, &session, cli.json),
-                    Commands::Label { id, action, label } => cmd_label(&mut store, &id, &action, &label, cli.json),
-                    Commands::Priority { id, value } => cmd_priority(&mut store, &id, value, cli.json),
-                    Commands::Comment { id, text, author } => cmd_comment(&mut store, &id, &text, &author, cli.json),
-                    Commands::Import { file, keep_ids } => cmd_import(&mut store, &file, keep_ids, cli.json),
+                    Commands::Label { id, action, label } => {
+                        cmd_label(&mut store, &id, &action, &label, cli.json)
+                    }
+                    Commands::Priority { id, value } => {
+                        cmd_priority(&mut store, &id, value, cli.json)
+                    }
+                    Commands::Comment { id, text, author } => {
+                        cmd_comment(&mut store, &id, &text, &author, cli.json)
+                    }
+                    Commands::Import { file, keep_ids } => {
+                        cmd_import(&mut store, &file, keep_ids, cli.json)
+                    }
                 },
                 Err(e) => Err(e),
             }
