@@ -2,3 +2,7 @@ target
 
 # Superego
 .superego/
+
+
+# Local ba task store
+.ba/
